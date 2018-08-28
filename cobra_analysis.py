@@ -269,11 +269,12 @@ def get_ppi_image(taxon_id, my_gene, reaction_dir):
     urlretrieve(request_url % "%0d".join(list(my_gene)), result_file)
 
 
-def to_parameters(selection, export_type='svg', include_metabolic=True, include_secondary=False,
-                  include_antibiotic=False, include_microbial=False, whole_modules=False,
-                  whole_pathways=False, keep_colors=False, default_opacity=1, default_width=3,
-                  default_radius=7, default_color='#666666', query_reactions=False, tax_filter='',
-                  export_dpi=1200):
+def to_parameters(selection, export_type='svg', include_metabolic=True,
+                  include_secondary=False, include_antibiotic=False,
+                  include_microbial=False, whole_modules=False,
+                  whole_pathways=False, keep_colors=False, default_opacity=1,
+                  default_width=3, default_radius=7, default_color='#666666',
+                  query_reactions=False, tax_filter='', export_dpi=1200):
     allowed_export_types = ['svg', 'png', 'pdf', 'eps']
     assert export_type in allowed_export_types, \
         "export_type {0} needs to be one of {1}".format(export_type,

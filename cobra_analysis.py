@@ -211,8 +211,9 @@ def map_values_to_range(values, output_range, vmin, vmax):
     return normed_values * out_diff + output_range[0]
 
 
-def create_selection(data, color_column=None, width_column=None, opacity_column=None,
-                     color_kws=None, width_kws=None, opacity_kws=None):
+def create_selection(data, color_column=None, width_column=None,
+                     opacity_column=None, color_kws=None,
+                     width_kws=None, opacity_kws=None):
     """transforms a pandas dataframe to selection which can be used in ipath2:
     # Supported data types for indexes
     The following data types are supported by iPath, and can be used to customize the maps.

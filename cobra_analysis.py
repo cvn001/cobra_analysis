@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 # -*- coding: UTF-8 -*-
 #
 # INTRODUCTION
@@ -93,6 +93,8 @@ def parse_cmdline():
                         default=None, help="Input STRING organisms taxon ID")
     parser.add_argument("-o", "--output", dest="output", action="store", required=False,
                         default=None, help="Output dir name")
+    parser.add_argument("-e", "--essential", dest="essential", action="store", required=False,
+                        default=None, help="DEG essential gene file")
     parsers = parser.parse_args()
     return parsers
 
@@ -116,7 +118,7 @@ def get_biomart(species, meta):
                                                   'description',
                                                   'uniprotswissprot',
                                                   'kegg_enzyme'])
-    except:
+    except IndexError:
         mart = server['ENSEMBL_MART_ENSEMBL']
         print('Invalid dataset in BioMart')
         print(mart.list_datasets())
@@ -126,7 +128,7 @@ def get_biomart(species, meta):
 def get_flux(index, model):
     try:
         flux_value = float(model.reactions[index].x)
-    except:
+    except IndexError:
         flux_value = None
     return round(flux_value, 4)
 
@@ -169,7 +171,8 @@ def load_gene_annotation(query_set=pd.DataFrame(), meta=None):
     return gene_dict, uniprot_dict, meta_dict
 
 
-def map_values_to_colors(values, non_negative_colormap='inferno', divergent_color_map='RdBu_r'):
+def map_values_to_colors(values, non_negative_colormap='inferno',
+                         divergent_color_map='RdBu_r'):
     """ if values are non-negative, a sequencial colormap is used,
     if the values are negative and positive, a symetrical Red to blue colormap is used"""
     if all(np.array(values) >= 0):
@@ -330,6 +333,26 @@ def scale_map(map_name):
               ).save(map_name + '_scaled.svg')
 
 
+def run_cobra(reaction_index, model_file, index):
+    # normal
+    model = cobra.io.read_sbml_model(model_file)
+    model.optimize()
+    normal_flux = get_flux(reaction_index, model)
+    # knockout
+    model = cobra.io.read_sbml_model(model_file)
+    cobra.manipulation.delete.remove_genes(model, [model.genes[index]])
+    model.optimize()
+    knockout_flux = get_flux(reaction_index, model)
+    # stat
+    result = []
+    if normal_flux:
+        if normal_flux != knockout_flux:
+            diff = round(normal_flux - knockout_flux, 4)
+            result = [str(model.genes[index].id), str(normal_flux),
+                      str(knockout_flux), str(diff)]
+    return result
+
+
 def load_ppi(ppi_file):
     ppi_dict = defaultdict()
     edge_list = []
@@ -346,29 +369,17 @@ def load_ppi(ppi_file):
     return ppi_dict, ppi_graph
 
 
-def run_cobra(reaction_index, model_file, index):
-    # normal
-    model = cobra.io.read_sbml_model(model_file)
-    model.optimize()
-    normal_flux = get_flux(reaction_index, model)
-    # knockout
-    model = cobra.io.read_sbml_model(model_file)
-    cobra.manipulation.delete.remove_genes(model, [model.genes[index]])
-    model.optimize()
-    knockout_flux = get_flux(reaction_index, model)
-    # stat
-
-    result = []
-    if normal_flux:
-        if normal_flux != knockout_flux:
-            diff = round(normal_flux - knockout_flux, 4)
-            result = [str(model.genes[index].id), str(normal_flux),
-                      str(knockout_flux), str(diff)]
-    return result
+def load_essential(essential_file):
+    e_dict = defaultdict()
+    with open(essential_file, 'r') as f:
+        for each_line in f.readlines()[1:]:
+            e_list = each_line.strip().split('\t')
+            e_dict[e_list[2]] = e_list[3]
+    return e_dict
 
 
-def flux_stat(model_file, reaction_name, knockout_dict, organism,
-              gene_dict, ppi_dict, taxon_id, cpu, uniprot_dict, meta_dict):
+def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
+              ppi_dict, taxon_id, cpu, uniprot_dict, meta_dict, essential_dict):
     result_list = []
     model = cobra.io.read_sbml_model(model_file)
     reaction_index = model.reactions.index(reaction_name)
@@ -388,7 +399,8 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism,
     print('>>> Loading KEGG pathway')
     with open(result_file, 'w') as f:
         f.write('gene_table\tgene_name\tnormal_knockout_flux\tnormal_reaction_flux\t'
-                'reaction_knockout_flux\tdifference\tgene_annotation\n')
+                'reaction_knockout_flux\tdifference\tessentiality\tgene_annotation\t'
+                'KEGG\tMetaCyc\tPPI\n')
         for m in result_list:
             m_list = m.get()
             if m_list:
@@ -403,22 +415,34 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism,
                     if meta_dict:
                         if table in meta_dict:
                             meta_line = ', '.join(meta_dict[table])
-                if table in uniprot_dict:
-                    uniprot_list.append('UNIPROT:{0}'.format(str(uniprot_dict[table])))
                 n_flux = m_list[1]
                 r_flux = m_list[2]
                 diff = m_list[3]
                 ppi_line = ''
                 if table in ppi_dict:
                     ppi_line = ', '.join(ppi_dict[table])
-                if float(k_flux) != 0 and float(diff) >= 0.1*float(n_flux):
-                    valid_gene_list.append(table)
+                uniprot_id = ''
+                if table in uniprot_dict:
+                    uniprot_id = 'UNIPROT:{0}'.format(str(uniprot_dict[table]))
+                if float(k_flux) != 0 and float(diff) >= 0.1 * float(n_flux):
+                    essentiality = ''
+                    if essential_dict:
+                        if table in essential_dict:
+                            essentiality = essential_dict[table]
+                            if essentiality == 'NE':
+                                valid_gene_list.append(table)
+                                if table in uniprot_dict:
+                                    if uniprot_id:
+                                        uniprot_list.append(uniprot_id)
+                        valid_gene_list.append(table)
+                        if table in uniprot_dict:
+                            uniprot_list.append(uniprot_id)
                     result_line = ''
                     kegg_pathway_line = load_kegg(table, organism)
-                    for i in [table, name, k_flux, n_flux, r_flux, diff,
+                    for i in [table, name, k_flux, n_flux, r_flux, diff, essentiality,
                               annotation, kegg_pathway_line, meta_line]:
                         result_line += '{0}\t'.format(str(i))
-                    f.write(result_line.strip() + '\t' + ppi_line + '\n')
+                    f.write(result_line.strip('\r|\n') + '\t' + ppi_line + '\n')
     ppi_out_dir = os.path.join(reaction_dir, 'PPI')
     if os.path.exists(ppi_out_dir):
         shutil.rmtree(ppi_out_dir)
@@ -429,18 +453,10 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism,
     print('>>> Building iPath pathway graph')
     get_ipath_map('\n'.join(uniprot_list), keep_colors=True,
                   reaction_dir=reaction_dir, map_name=reaction_name)
-    # scale_map(map_name=reaction_name)
-    # sub_graph_file = os.path.join(my_path, '{0}_gene_PPI.edgelist'.format(reaction_name))
-    # sub_graph = ppi_graph.subgraph(valid_list)
-    # position = nx.spring_layout(sub_graph)
-    # nx.draw_networkx(sub_graph, pos=position)
-    # output_picture = os.path.join(my_path, '{0}_gene_PPI.png'.format(reaction_name))
-    # pl.savefig(output_picture, format='png')
-    # nx.write_edgelist(sub_graph, sub_graph_file)
 
 
+# Run as script
 if __name__ == '__main__':
-    # Run as script
     # Parse command-line
     args = parse_cmdline()
     start_time = datetime.now()
@@ -453,6 +469,7 @@ if __name__ == '__main__':
     kegg_organism = args.species
     my_taxon = args.taxon
     output = args.output
+    essential = args.essential
     # Begin
     my_path = os.getcwd()
     print('> Begin')
@@ -470,14 +487,20 @@ if __name__ == '__main__':
         shutil.rmtree(output_dir)
     os.makedirs(output_dir)
     # Load all genes annotation
-    print('>> Load BioMart dataset: {0}'.format(species_dataset))
+    print('>> Loading BioMart dataset: {0}'.format(species_dataset))
     my_biomart_set = get_biomart(species=species_dataset, meta=metacyc)
     gene_d, uniprot_d, metacyc_d = load_gene_annotation(query_set=my_biomart_set,
                                                         meta=metacyc)
     # Load all PPI data
-    print('>> Building PPI network: {0}'.format(ppi_file_name))
+    print('>> Loading PPI network: {0}'.format(ppi_file_name))
     input_ppi_file = os.path.join(my_path, ppi_file_name)
     input_ppi_dict, input_ppi_graph = load_ppi(input_ppi_file)
+    # Load essential genes in DEG database
+    essential_gene_dict = None
+    if essential:
+        print('>> Loading DEG essential genes: {0}'.format(essential))
+        essential_gene_file = os.path.join(my_path, essential)
+        essential_gene_dict = load_essential(essential_gene_file)
     print('>> Step 1: All genes knockout')
     gene_knockout_dict = essential_gene_knockout(my_model_file)
     print('>> Step 2: gene knockout in inputted reaction(s)')
@@ -492,7 +515,8 @@ if __name__ == '__main__':
                   cpu=thread_num,
                   organism=kegg_organism,
                   meta_dict=metacyc_d,
-                  uniprot_dict=uniprot_d)
+                  uniprot_dict=uniprot_d,
+                  essential_dict=essential_gene_dict)
         print('>>> done')
     end_time = datetime.now()
     run_time = (end_time - start_time).seconds

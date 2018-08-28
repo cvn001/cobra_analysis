@@ -472,7 +472,7 @@ if __name__ == '__main__':
     essential = args.essential
     # Begin
     my_path = os.getcwd()
-    print('> Begin')
+    print('> Start')
     # Print input model file
     print('>> Input model file: {0}'.format(model_file_name))
     my_model_file = os.path.join(my_path, model_file_name)
@@ -517,7 +517,7 @@ if __name__ == '__main__':
                   meta_dict=metacyc_d,
                   uniprot_dict=uniprot_d,
                   essential_dict=essential_gene_dict)
-        print('>>> done')
+        print('>>> Done')
     end_time = datetime.now()
     run_time = (end_time - start_time).seconds
     print('> End: {0}s'.format(str(run_time)))

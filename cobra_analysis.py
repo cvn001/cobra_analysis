@@ -297,9 +297,9 @@ def to_parameters(selection, export_type='svg', include_metabolic=True, include_
     return result_dict
 
 
-def get_ipath_map(selection, reaction_dir, map_name='map', **param):
+def get_ipath_map(selection, tax_id, reaction_dir, map_name='map', **param):
     url = 'https://pathways.embl.de/mapping.cgi'
-    parameters = to_parameters(selection, **param)
+    parameters = to_parameters(selection=selection, tax_filter=tax_id, **param)
     r = requests.post(url, data=parameters)
     assert r.ok, r.text
     result_file = os.path.join(reaction_dir, '{0}.svg'.format(map_name))
@@ -444,7 +444,7 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
                     for i in [table, name, k_flux, n_flux, r_flux, diff, essentiality,
                               annotation, kegg_pathway_line, meta_line]:
                         result_line += '{0}\t'.format(str(i))
-                    f.write(result_line.strip('\r|\n') + '\t' + ppi_line + '\n')
+                    f.write(result_line.strip('\t') + '\t' + ppi_line + '\n')
     ppi_out_dir = os.path.join(reaction_dir, 'PPI')
     if os.path.exists(ppi_out_dir):
         shutil.rmtree(ppi_out_dir)
@@ -453,15 +453,15 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
     for gene in valid_gene_list:
         get_ppi_image(taxon_id, gene, ppi_out_dir)
     print('>>> Building iPath pathway graph')
-    get_ipath_map('\n'.join(uniprot_list), keep_colors=True,
+    get_ipath_map('\n'.join(uniprot_list), keep_colors=True, tax_id=taxon_id,
                   reaction_dir=reaction_dir, map_name=reaction_name)
 
 
 # Run as script
 if __name__ == '__main__':
     # Parse command-line
-    args = parse_cmdline()
     start_time = datetime.now()
+    args = parse_cmdline()
     reactions = args.reactions
     model_file_name = args.model
     thread_num = args.cpu_num

@@ -211,9 +211,8 @@ def map_values_to_range(values, output_range, vmin, vmax):
     return normed_values * out_diff + output_range[0]
 
 
-def create_selection(data, color_column=None, width_column=None,
-                     opacity_column=None, color_kws=None,
-                     width_kws=None, opacity_kws=None):
+def create_selection(data, color_column=None, width_column=None, opacity_column=None,
+                     color_kws=None, width_kws=None, opacity_kws=None):
     """transforms a pandas dataframe to selection which can be used in ipath2:
     # Supported data types for indexes
     The following data types are supported by iPath, and can be used to customize the maps.
@@ -270,12 +269,11 @@ def get_ppi_image(taxon_id, my_gene, reaction_dir):
     urlretrieve(request_url % "%0d".join(list(my_gene)), result_file)
 
 
-def to_parameters(selection, export_type='svg', include_metabolic=True,
-                  include_secondary=False, include_antibiotic=False,
-                  include_microbial=False, whole_modules=False,
-                  whole_pathways=False, keep_colors=False, default_opacity=1,
-                  default_width=3, default_radius=7, default_color='#666666',
-                  query_reactions=False, tax_filter='', export_dpi=1200):
+def to_parameters(selection, export_type='svg', include_metabolic=True, include_secondary=False,
+                  include_antibiotic=False, include_microbial=False, whole_modules=False,
+                  whole_pathways=False, keep_colors=False, default_opacity=1, default_width=3,
+                  default_radius=7, default_color='#666666', query_reactions=False, tax_filter='',
+                  export_dpi=1200):
     allowed_export_types = ['svg', 'png', 'pdf', 'eps']
     assert export_type in allowed_export_types, \
         "export_type {0} needs to be one of {1}".format(export_type,
@@ -436,9 +434,11 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
                                 if table in uniprot_dict:
                                     if uniprot_id:
                                         uniprot_list.append(uniprot_id)
+                    else:
                         valid_gene_list.append(table)
                         if table in uniprot_dict:
-                            uniprot_list.append(uniprot_id)
+                            if uniprot_id:
+                                uniprot_list.append(uniprot_id)
                     result_line = ''
                     kegg_pathway_line = load_kegg(table, organism)
                     for i in [table, name, k_flux, n_flux, r_flux, diff, essentiality,
@@ -474,7 +474,7 @@ if __name__ == '__main__':
     essential = args.essential
     # Begin
     my_path = os.getcwd()
-    print('> Start')
+    print('> Begin')
     # Print input model file
     print('>> Input model file: {0}'.format(model_file_name))
     my_model_file = os.path.join(my_path, model_file_name)
@@ -519,7 +519,7 @@ if __name__ == '__main__':
                   meta_dict=metacyc_d,
                   uniprot_dict=uniprot_d,
                   essential_dict=essential_gene_dict)
-        print('>>> Done')
+        print('>>> done')
     end_time = datetime.now()
     run_time = (end_time - start_time).seconds
     print('> End: {0}s'.format(str(run_time)))

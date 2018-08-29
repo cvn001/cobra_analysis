@@ -161,8 +161,6 @@ def load_gene_annotation(query_set=pd.DataFrame(), meta=None):
         name = row['Gene name']
         description = row['Gene description']
         uniprot_id = row['UniProtKB/Swiss-Prot ID']
-        # kegg_list = row['KEGG Pathway and Enzyme ID'].split('+')
-        # kegg_enzymes = uniprot_id
         uniprot_dict[table] = uniprot_id
         if meta:
             metacyc_id = row['MetaCyc ID']
@@ -173,8 +171,6 @@ def load_gene_annotation(query_set=pd.DataFrame(), meta=None):
 
 def map_values_to_colors(values, non_negative_colormap='inferno',
                          divergent_color_map='RdBu_r'):
-    """ if values are non-negative, a sequencial colormap is used,
-    if the values are negative and positive, a symetrical Red to blue colormap is used"""
     if all(np.array(values) >= 0):
         norm = None
         cmap = non_negative_colormap
@@ -213,22 +209,6 @@ def map_values_to_range(values, output_range, vmin, vmax):
 
 def create_selection(data, color_column=None, width_column=None, opacity_column=None,
                      color_kws=None, width_kws=None, opacity_kws=None):
-    """transforms a pandas dataframe to selection which can be used in ipath2:
-    # Supported data types for indexes
-    The following data types are supported by iPath, and can be used to customize the maps.
-    Make sure you use the required prefix for each data type, as shown in the examples below:
-    Data type	Prefix	Example ID
-    KEGG Pathways	-	00650
-    KEGG Compounds	-	C00003
-    KEGG KOs	-	K01000
-    STRING proteins	-	224324.AQ_626
-    KEGG proteins	-	aae:aq_626
-    COGs/eggNOG OGs	-	COG0007
-    Enzyme EC numbers	E or EC	E2.4.1.82
-    Uniprot IDs/ACCs	UNIPROT:	UNIPROT:Q93015
-    IPI IDs	-	IPI00745889
-    NCBI GI IDs	ncbi-gi:	ncbi-gi:326314893
-    """
     assert type(data) == pd.DataFrame
     output_data = pd.DataFrame(index=data.index)
     if color_column:
@@ -297,9 +277,9 @@ def to_parameters(selection, export_type='svg', include_metabolic=True, include_
     return result_dict
 
 
-def get_ipath_map(selection, tax_id, reaction_dir, map_name='map', **param):
+def get_ipath_map(selection, reaction_dir, map_name='map', **param):
     url = 'https://pathways.embl.de/mapping.cgi'
-    parameters = to_parameters(selection=selection, tax_filter=tax_id, **param)
+    parameters = to_parameters(selection=selection, **param)
     r = requests.post(url, data=parameters)
     assert r.ok, r.text
     result_file = os.path.join(reaction_dir, '{0}.svg'.format(map_name))
@@ -439,26 +419,30 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
                         if table in uniprot_dict:
                             if uniprot_id:
                                 uniprot_list.append(uniprot_id)
-                    result_line = ''
                     kegg_pathway_line = load_kegg(table, organism)
-                    for i in [table, name, k_flux, n_flux, r_flux, diff, essentiality,
-                              annotation, kegg_pathway_line, meta_line]:
-                        result_line += '{0}\t'.format(str(i))
-                    f.write(result_line.strip('\t') + '\t' + ppi_line + '\n')
+                    c = [str(table), str(name), str(k_flux), str(n_flux),
+                         str(r_flux), str(diff), str(essentiality), str(annotation),
+                         str(kegg_pathway_line), str(meta_line), str(ppi_line)]
+                    result_line = '\t'.join(c)
+                    f.write(result_line + '\n')
     ppi_out_dir = os.path.join(reaction_dir, 'PPI')
     if os.path.exists(ppi_out_dir):
         shutil.rmtree(ppi_out_dir)
     os.makedirs(ppi_out_dir)
     print('>>> Building PPI graph')
+    g = Pool(cpu)
     for gene in valid_gene_list:
-        get_ppi_image(taxon_id, gene, ppi_out_dir)
+        g.apply_async(get_ppi_image, args=(taxon_id, gene, ppi_out_dir,))
+        # get_ppi_image(taxon_id, gene, ppi_out_dir)
+    g.close()
+    g.join()
     print('>>> Building iPath pathway graph')
-    get_ipath_map('\n'.join(uniprot_list), keep_colors=True, tax_id=taxon_id,
+    get_ipath_map('\n'.join(uniprot_list), keep_colors=True,
                   reaction_dir=reaction_dir, map_name=reaction_name)
 
 
-# Run as script
 if __name__ == '__main__':
+    # Run as script
     # Parse command-line
     start_time = datetime.now()
     args = parse_cmdline()

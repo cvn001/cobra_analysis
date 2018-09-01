@@ -6,13 +6,13 @@
 #
 # DEPENDENCIES
 # =============================================================================
-# Python (>=2.7, 3.x is recommended for its speed.)
-# o CobraPY (>=0.13)
+# Python 3.x
+# CobraPY (>=0.13)
 # =============================================================================
 #
 # USAGE
 # =============================================================================
-# calculate_ani.py [options]
+# cobra_analysis.py [options]
 #
 # Options:
 #   -h, --help            show this help message and exit
@@ -58,12 +58,15 @@ import networkx as nx
 import matplotlib as mpl
 import warnings
 import svgutils.compose as sc
+from retrying import retry
+from intermine.webservice import Service
 from bioservices.kegg import KEGG
 from urllib.request import urlretrieve
 from pybiomart import Dataset, Server
 from argparse import ArgumentParser
 from datetime import datetime
 from collections import defaultdict, OrderedDict
+from pubmed_lookup import PubMedLookup, Publication
 from multiprocessing import Pool, cpu_count
 
 
@@ -74,27 +77,27 @@ def parse_cmdline():
     """
     parser = ArgumentParser(prog="cobra_analysis.py")
     parser.add_argument("-m", "--model", dest="model", action="store", default=None,
-                        required=True, help="Input model file")
+                        required=True, type=str, help="Input model file")
     parser.add_argument("-r", "--reactions", dest="reactions", action="append",
-                        default=None, required=True, help="Input reaction")
+                        default=None, required=True, type=str, help="Input reaction")
     parser.add_argument("-d", "--dataset", dest="dataset", action="store",
                         default=None, required=True, help="BioMart organism dataset")
     parser.add_argument("-p", "--ppi", dest="ppi", action="store", default=None,
-                        required=True, help="PPI file")
+                        required=True, type=str, help="PPI file")
     parser.add_argument("-c", "--metacyc", dest="metacyc", action="store", default=None,
-                        required=False, help="Metacyc pathway file")
+                        required=False, type=str, help="Metacyc pathway file")
     parser.add_argument("-s", "--species", dest="species", action="store", default=None,
-                        required=True, help="KEGG species abbreviation")
+                        required=True, type=str, help="KEGG species abbreviation")
     parser.add_argument("-v", "--version", action="version", version="%(prog)s v1.0",
                         default=None, help="Show program’s version number and exit")
     parser.add_argument("-n", "--cpu", dest="cpu_num", action="store", required=False,
-                        default=cpu_count(), help="How many processes will be used")
+                        default=cpu_count(), type=int, help="How many processes will be used")
     parser.add_argument("-t", "--taxon", dest="taxon", action="store", required=True,
-                        default=None, help="Input STRING organisms taxon ID")
+                        default=None, type=str, help="Input STRING organisms taxon ID")
     parser.add_argument("-o", "--output", dest="output", action="store", required=False,
-                        default=None, help="Output dir name")
+                        default=None, type=str, help="Output dir name")
     parser.add_argument("-e", "--essential", dest="essential", action="store", required=False,
-                        default=None, help="DEG essential gene file")
+                        default=None, type=str, help="DEG essential gene file")
     parsers = parser.parse_args()
     return parsers
 
@@ -207,6 +210,34 @@ def map_values_to_range(values, output_range, vmin, vmax):
     return normed_values * out_diff + output_range[0]
 
 
+def to_parameters(selection, export_type='svg', include_metabolic=True,
+                  include_secondary=False, include_antibiotic=False,
+                  include_microbial=False, whole_modules=False,
+                  whole_pathways=False, keep_colors=False, default_opacity=1,
+                  default_width=3, default_radius=7, default_color='#666666',
+                  query_reactions=False, tax_filter='', export_dpi=1200):
+    allowed_export_types = ['svg', 'png', 'pdf', 'eps']
+    assert export_type in allowed_export_types, \
+        "export_type {0} needs to be one of {1}".format(export_type, allowed_export_types)
+    result_dict = dict(selection=selection,
+                       export_type=export_type,
+                       keep_colors=int(keep_colors),
+                       include_metabolic=int(include_metabolic),
+                       include_secondary=int(include_secondary),
+                       include_antibiotic=int(include_antibiotic),
+                       include_microbial=int(include_microbial),
+                       whole_modules=int(whole_modules),
+                       default_opacity=default_opacity,
+                       whole_pathways=int(whole_pathways),
+                       default_width=default_width,
+                       default_color=default_color,
+                       default_radius=default_radius,
+                       query_reactions=int(query_reactions),
+                       tax_filter=tax_filter,
+                       export_dpi=export_dpi)
+    return result_dict
+
+
 def create_selection(data, color_column=None, width_column=None, opacity_column=None,
                      color_kws=None, width_kws=None, opacity_kws=None):
     assert type(data) == pd.DataFrame
@@ -233,7 +264,8 @@ def create_selection(data, color_column=None, width_column=None, opacity_column=
     return output_str
 
 
-def get_ppi_image(taxon_id, my_gene, reaction_dir):
+@retry(stop_max_attempt_number=50)
+def get_ppi_image(taxon_id, gene, reaction_dir):
     string_api_url = 'https://string-db.org/api'
     output_format = 'image'
     method = 'network'
@@ -244,37 +276,109 @@ def get_ppi_image(taxon_id, my_gene, reaction_dir):
     request_url += '&' + 'species=' + taxon_id
     request_url += '&' + 'add_white_nodes=15'
     request_url += '&' + 'caller_identity=' + my_app
-    result_file = os.path.join(reaction_dir, '{0}_ppi.png'.format(my_gene))
-    # For each gene call STRING
-    urlretrieve(request_url % "%0d".join(list(my_gene)), result_file)
+    result_file = os.path.join(reaction_dir, '{0}.png'.format(gene))
+    # For each gene call STRING database
+    try:
+        urlretrieve(request_url % "%0d".join(list(gene)), result_file)
+    except ConnectionError:
+        print('STRING db connection error: {0}'.format(gene))
 
 
-def to_parameters(selection, export_type='svg', include_metabolic=True, include_secondary=False,
-                  include_antibiotic=False, include_microbial=False, whole_modules=False,
-                  whole_pathways=False, keep_colors=False, default_opacity=1, default_width=3,
-                  default_radius=7, default_color='#666666', query_reactions=False, tax_filter='',
-                  export_dpi=1200):
-    allowed_export_types = ['svg', 'png', 'pdf', 'eps']
-    assert export_type in allowed_export_types, \
-        "export_type {0} needs to be one of {1}".format(export_type,
-                                                        allowed_export_types)
-    result_dict = dict(selection=selection,
-                       export_type=export_type,
-                       keep_colors=int(keep_colors),
-                       include_metabolic=int(include_metabolic),
-                       include_secondary=int(include_secondary),
-                       include_antibiotic=int(include_antibiotic),
-                       include_microbial=int(include_microbial),
-                       whole_modules=int(whole_modules),
-                       default_opacity=default_opacity,
-                       whole_pathways=int(whole_pathways),
-                       default_width=default_width,
-                       default_color=default_color,
-                       default_radius=default_radius,
-                       query_reactions=int(query_reactions),
-                       tax_filter=tax_filter,
-                       export_dpi=export_dpi)
-    return result_dict
+@retry(stop_max_attempt_number=50)
+def pubmed_connection(pubmed_id, gene):
+    email = ''
+    url = 'http://www.ncbi.nlm.nih.gov/pubmed/{0}'.format(str(pubmed_id))
+    l_result_line = ''
+    try:
+        lookup = PubMedLookup(url, email)
+        publication = Publication(lookup)
+        l_result_line = 'TITLE:\t{title}\nAUTHORS:\t{authors}\nJOURNAL:\t' \
+                        '{journal}\nYEAR:\t{year}\nMONTH:\t{month}\nDAY:\t' \
+                        '{day}\nURL:\t{url}\nPUBMED:\t{pubmed}\nCITATION:\t' \
+                        '{citation}\nMINICITATION:\t{mini_citation}\nABSTRACT:\t' \
+                        '{abstract}\n'.format(**{'title': publication.title,
+                                                 'authors': publication.authors,
+                                                 'journal': publication.journal,
+                                                 'year': publication.year,
+                                                 'month': publication.month,
+                                                 'day': publication.day,
+                                                 'url': publication.url,
+                                                 'pubmed': publication.pubmed_url,
+                                                 'citation': publication.cite(),
+                                                 'mini_citation': publication.cite_mini(),
+                                                 'abstract': publication.abstract})
+    except ConnectionError:
+        print('PubMed connection error: {0} {1}'.format(gene, pubmed_id))
+    return l_result_line
+
+
+def sgd_connection(gene, p_dir, l_dir):
+    # load gene phenotype data from SGD database
+    service = Service('https://yeastmine.yeastgenome.org:443/yeastmine/service')
+    assert isinstance(service.new_query('Gene'), object)
+    a = service.new_query('Gene')
+    view_list = ['primaryIdentifier',
+                 'symbol',
+                 'secondaryIdentifier',
+                 'sgdAlias',
+                 'qualifier',
+                 'phenotypes.experimentType',
+                 'phenotypes.mutantType',
+                 'phenotypes.observable',
+                 'phenotypes.qualifier',
+                 'phenotypes.allele',
+                 'phenotypes.alleleComment',
+                 'phenotypes.strainBackground',
+                 'phenotypes.chemical',
+                 'phenotypes.condition',
+                 'phenotypes.details',
+                 'phenotypes.reporter',
+                 'phenotypes.publications.pubMedId',
+                 'phenotypes.publications.citation']
+    for item in view_list:
+        a.add_view(item)
+    a.add_constraint('organism.shortName', '=', 'S. cerevisiae', code='B')
+    a.add_constraint('Gene', 'LOOKUP', gene, code='A')
+    phenotype_line = 'Gene Primary DBID\tGene Standard Name\tGene Systematic Name\t' \
+                     'Gene Sgd Alias\tGene Qualifier\tPhenotypes Experiment Type\t' \
+                     'Phenotypes Mutant Type\tPhenotypes Observable\tPhenotypes Qualifier\t' \
+                     'Phenotypes Allele\tPhenotypes Allele Comment\tPhenotypes Strain Background\t' \
+                     'Phenotypes Chemical\tPhenotypes Condition\tPhenotypes Details\t' \
+                     'Phenotypes Reporter\tPublications PubMed ID\tPublications Citation\n'
+    p_result_file = os.path.join(p_dir, '{0}.txt'.format(gene))
+    with open(p_result_file, 'w', encoding='utf-8') as f1:
+        for row in a.rows():
+            result_line = ''
+            for k in view_list:
+                result_line += '{0}\t'.format(str(row[k]))
+            phenotype_line += result_line.strip() + '\n'
+        f1.write(phenotype_line)
+    # Load phenotype summary
+    b = service.new_query('Gene')
+    b.add_view('phenotypes.genes.phenotypeSummary')
+    b.add_constraint('organism.shortName', '=', 'S. cerevisiae', code='B')
+    b.add_constraint('Gene', 'LOOKUP', gene, code='A')
+    summary = ''
+    for row in b.rows():
+        p_result = row['phenotypes.genes.phenotypeSummary']
+        if p_result:
+            summary += p_result
+    result_list = [gene, summary]
+    # Load PubMed id
+    c = service.new_query('Gene')
+    c.add_view('publicationAnnotations.publication.pubMedId')
+    c.add_constraint('organism.shortName', '=', 'S. cerevisiae', code='B')
+    c.add_constraint('Gene', 'LOOKUP', gene, code='A')
+    l_result_file = os.path.join(l_dir, '{0}.txt'.format(gene))
+    u = 0
+    with open(l_result_file, 'w', encoding='utf-8') as f2:
+        for row in c.rows():
+            u += 1
+            pubmed_id = row['publicationAnnotations.publication.pubMedId']
+            if pubmed_id:
+                l_result_line = pubmed_connection(pubmed_id, gene)
+                f2.write('#{0}\n'.format(str(u)) + l_result_line + '\n')
+    return result_list
 
 
 def get_ipath_map(selection, reaction_dir, map_name='map', **param):
@@ -294,6 +398,7 @@ def inspect_online(selection, **param):
     return r
 
 
+@retry(stop_max_attempt_number=50)
 def load_kegg(gene, organism):
     k = KEGG()
     result_line = ''
@@ -303,7 +408,7 @@ def load_kegg(gene, organism):
             k_list = list(a.values())
             result_line = ', '.join(k_list)
     except:
-        pass
+        print("Gene '{0}' is not in KEGG database".format(gene))
     return result_line
 
 
@@ -364,8 +469,6 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
     model = cobra.io.read_sbml_model(model_file)
     reaction_index = model.reactions.index(reaction_name)
     reaction_dir = os.path.join(output_dir, reaction_name)
-    if os.path.exists(reaction_dir):
-        shutil.rmtree(reaction_dir)
     os.makedirs(reaction_dir)
     p = Pool(cpu)
     for gene_index in range(len(model.genes)):
@@ -377,66 +480,92 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
     valid_gene_list = []
     uniprot_list = []
     print('>>> Loading KEGG pathway')
-    with open(result_file, 'w') as f:
-        f.write('gene_table\tgene_name\tnormal_knockout_flux\tnormal_reaction_flux\t'
-                'reaction_knockout_flux\tdifference\tessentiality\tgene_annotation\t'
-                'KEGG\tMetaCyc\tPPI\n')
-        for m in result_list:
-            m_list = m.get()
-            if m_list:
-                table = m_list[0]
-                k_flux = knockout_dict[table]
-                annotation = ''
-                name = ''
-                meta_line = ''
-                if table in gene_dict:
-                    annotation = gene_dict[table][1]
-                    name = gene_dict[table][0]
-                    if meta_dict:
-                        if table in meta_dict:
-                            meta_line = ', '.join(meta_dict[table])
-                n_flux = m_list[1]
-                r_flux = m_list[2]
-                diff = m_list[3]
-                ppi_line = ''
-                if table in ppi_dict:
-                    ppi_line = ', '.join(ppi_dict[table])
-                uniprot_id = ''
-                if table in uniprot_dict:
-                    uniprot_id = 'UNIPROT:{0}'.format(str(uniprot_dict[table]))
-                if float(k_flux) != 0 and float(diff) >= 0.1 * float(n_flux):
-                    essentiality = ''
-                    if essential_dict:
-                        if table in essential_dict:
-                            essentiality = essential_dict[table]
-                            if essentiality == 'NE':
-                                valid_gene_list.append(table)
-                                if table in uniprot_dict:
-                                    if uniprot_id:
-                                        uniprot_list.append(uniprot_id)
-                    else:
-                        valid_gene_list.append(table)
-                        if table in uniprot_dict:
+    result_dict = OrderedDict()
+    header = 'gene_table\tgene_name\tnormal_knockout_flux\tnormal_reaction_flux\t' \
+             'reaction_knockout_flux\tdifference\tessentiality\tgene_annotation\t' \
+             'KEGG\tMetaCyc\tPPI\tphenotype_summary\n'
+    for m in result_list:
+        m_list = m.get()
+        if m_list:
+            table = m_list[0]
+            k_flux = knockout_dict[table]
+            annotation = ''
+            name = ''
+            meta_line = ''
+            if table in gene_dict:
+                annotation = gene_dict[table][1]
+                name = gene_dict[table][0]
+                if meta_dict:
+                    if table in meta_dict:
+                        meta_line = ', '.join(meta_dict[table])
+            n_flux = m_list[1]
+            r_flux = m_list[2]
+            diff = m_list[3]
+            ppi_line = ''
+            if table in ppi_dict:
+                ppi_line = ', '.join(ppi_dict[table])
+            uniprot_id = ''
+            if table in uniprot_dict:
+                uniprot_id = 'UNIPROT:{0}'.format(str(uniprot_dict[table]))
+            if float(k_flux) != 0 and float(diff) >= 0.1 * float(n_flux):
+                essentiality = ''
+                if essential_dict:
+                    if table in essential_dict:
+                        essentiality = essential_dict[table]
+                        if essentiality == 'NE':
+                            valid_gene_list.append(table)
                             if uniprot_id:
                                 uniprot_list.append(uniprot_id)
+                    else:
+                        valid_gene_list.append(table)
+                        if uniprot_id:
+                            uniprot_list.append(uniprot_id)
                     kegg_pathway_line = load_kegg(table, organism)
-                    c = [str(table), str(name), str(k_flux), str(n_flux),
-                         str(r_flux), str(diff), str(essentiality), str(annotation),
-                         str(kegg_pathway_line), str(meta_line), str(ppi_line)]
-                    result_line = '\t'.join(c)
-                    f.write(result_line + '\n')
+                    c_list = [str(table), str(name), str(k_flux), str(n_flux),
+                              str(r_flux), str(diff), str(essentiality), str(annotation),
+                              str(kegg_pathway_line), str(meta_line), str(ppi_line)]
+                    result_dict[table] = c_list
+                else:
+                    valid_gene_list.append(table)
+                    if uniprot_id:
+                        uniprot_list.append(uniprot_id)
+                    kegg_pathway_line = load_kegg(table, organism)
+                    c_list = [str(table), str(name), str(k_flux), str(n_flux),
+                              str(r_flux), str(diff), str(essentiality), str(annotation),
+                              str(kegg_pathway_line), str(meta_line), str(ppi_line)]
+                    result_dict[table] = c_list
     ppi_out_dir = os.path.join(reaction_dir, 'PPI')
-    if os.path.exists(ppi_out_dir):
-        shutil.rmtree(ppi_out_dir)
     os.makedirs(ppi_out_dir)
-    print('>>> Building PPI graph')
+    print('>>> Loading PPI graph')
     g = Pool(cpu)
     for gene in valid_gene_list:
-        g.apply_async(get_ppi_image, args=(taxon_id, gene, ppi_out_dir,))
-        # get_ppi_image(taxon_id, gene, ppi_out_dir)
+        g.apply_async(get_ppi_image, args=(taxon_id, gene, ppi_out_dir))
     g.close()
     g.join()
-    print('>>> Building iPath pathway graph')
+    print('>>> Loading phenotype and literature data')
+    p_dir = os.path.join(reaction_dir, 'phenotype')
+    os.makedirs(p_dir)
+    l_dir = os.path.join(reaction_dir, 'literature')
+    os.makedirs(l_dir)
+    q = Pool(cpu)
+    s_list = []
+    s_dict = defaultdict()
+    for gene in valid_gene_list:
+        s = q.apply_async(sgd_connection, args=(gene, p_dir, l_dir))
+        s_list.append(s)
+    q.close()
+    q.join()
+    for t in s_list:
+        t_list = t.get()
+        s_dict[t_list[0]] = t_list[1]
+    with open(result_file, 'w', encoding='utf-8') as f:
+        f.write(header)
+        for table in valid_gene_list:
+            x_list = result_dict[table]
+            x_list.append(str(s_dict[table]))
+            result_line = '\t'.join(x_list)
+            f.write(result_line + '\n')
+    print('>>> Loading iPath pathway graph')
     get_ipath_map('\n'.join(uniprot_list), keep_colors=True,
                   reaction_dir=reaction_dir, map_name=reaction_name)
 
@@ -456,9 +585,9 @@ if __name__ == '__main__':
     my_taxon = args.taxon
     output = args.output
     essential = args.essential
-    # Begin
+    # Start
     my_path = os.getcwd()
-    print('> Begin')
+    print('> Start')
     # Print input model file
     print('>> Input model file: {0}'.format(model_file_name))
     my_model_file = os.path.join(my_path, model_file_name)
@@ -487,9 +616,9 @@ if __name__ == '__main__':
         print('>> Loading DEG essential genes: {0}'.format(essential))
         essential_gene_file = os.path.join(my_path, essential)
         essential_gene_dict = load_essential(essential_gene_file)
-    print('>> Step 1: All genes knockout')
+    print('>> All genes knockout')
     gene_knockout_dict = essential_gene_knockout(my_model_file)
-    print('>> Step 2: gene knockout in inputted reaction(s)')
+    print('>> Gene knockout in inputted reaction(s)')
     for each_reaction in reactions:
         print('>>> Performing reaction {0}'.format(each_reaction))
         flux_stat(model_file=my_model_file,
@@ -503,7 +632,7 @@ if __name__ == '__main__':
                   meta_dict=metacyc_d,
                   uniprot_dict=uniprot_d,
                   essential_dict=essential_gene_dict)
-        print('>>> done')
+        print('>>> Done')
     end_time = datetime.now()
     run_time = (end_time - start_time).seconds
-    print('> End: {0}s'.format(str(run_time)))
+    print('> End: {0} seconds'.format(str(run_time)))

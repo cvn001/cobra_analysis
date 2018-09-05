@@ -581,6 +581,7 @@ if __name__ == '__main__':
         print('>> Output dir name: {0}'.format(output))
         output_dir = os.path.join(my_path, output)
     if os.path.exists(output_dir):
+        print('>> Clean previous results')
         shutil.rmtree(output_dir)
     os.makedirs(output_dir)
     # Load all genes annotation

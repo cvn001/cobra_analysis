@@ -57,7 +57,6 @@ import numpy as np
 import networkx as nx
 import matplotlib as mpl
 import warnings
-import svgutils.compose as sc
 from retrying import retry
 from intermine.webservice import Service
 from bioservices.kegg import KEGG
@@ -65,8 +64,8 @@ from urllib.request import urlretrieve
 from pybiomart import Dataset, Server
 from argparse import ArgumentParser
 from datetime import datetime
+from Bio import Entrez
 from collections import defaultdict, OrderedDict
-from pubmed_lookup import PubMedLookup, Publication
 from multiprocessing import Pool, cpu_count
 
 
@@ -286,36 +285,18 @@ def get_ppi_image(taxon_id, gene, reaction_dir):
 
 @retry(stop_max_attempt_number=50)
 def pubmed_connection(pubmed_id, gene):
-    email = ''
-    url = 'http://www.ncbi.nlm.nih.gov/pubmed/{0}'.format(str(pubmed_id))
-    l_result_line = ''
+    handle = None
     try:
-        lookup = PubMedLookup(url, email)
-        publication = Publication(lookup)
-        l_result_line = 'TITLE:\t{title}\nAUTHORS:\t{authors}\nJOURNAL:\t' \
-                        '{journal}\nYEAR:\t{year}\nMONTH:\t{month}\nDAY:\t' \
-                        '{day}\nURL:\t{url}\nPUBMED:\t{pubmed}\nCITATION:\t' \
-                        '{citation}\nMINICITATION:\t{mini_citation}\nABSTRACT:\t' \
-                        '{abstract}\n'.format(**{'title': publication.title,
-                                                 'authors': publication.authors,
-                                                 'journal': publication.journal,
-                                                 'year': publication.year,
-                                                 'month': publication.month,
-                                                 'day': publication.day,
-                                                 'url': publication.url,
-                                                 'pubmed': publication.pubmed_url,
-                                                 'citation': publication.cite(),
-                                                 'mini_citation': publication.cite_mini(),
-                                                 'abstract': publication.abstract})
+        Entrez.email = 'example@qq.com'
+        handle = Entrez.efetch(db='pubmed', id=pubmed_id, retmode='text', rettype='abstract')
     except ConnectionError:
         print('PubMed connection error: {0} {1}'.format(gene, pubmed_id))
-    return l_result_line
+    return handle
 
 
 def sgd_connection(gene, p_dir, l_dir):
     # load gene phenotype data from SGD database
     service = Service('https://yeastmine.yeastgenome.org:443/yeastmine/service')
-    assert isinstance(service.new_query('Gene'), object)
     a = service.new_query('Gene')
     view_list = ['primaryIdentifier',
                  'symbol',
@@ -370,14 +351,13 @@ def sgd_connection(gene, p_dir, l_dir):
     c.add_constraint('organism.shortName', '=', 'S. cerevisiae', code='B')
     c.add_constraint('Gene', 'LOOKUP', gene, code='A')
     l_result_file = os.path.join(l_dir, '{0}.txt'.format(gene))
-    u = 0
     with open(l_result_file, 'w', encoding='utf-8') as f2:
         for row in c.rows():
-            u += 1
             pubmed_id = row['publicationAnnotations.publication.pubMedId']
             if pubmed_id:
-                l_result_line = pubmed_connection(pubmed_id, gene)
-                f2.write('#{0}\n'.format(str(u)) + l_result_line + '\n')
+                handle = pubmed_connection(pubmed_id, gene)
+                if handle:
+                    f2.write(handle.read())
     return result_list
 
 
@@ -408,14 +388,8 @@ def load_kegg(gene, organism):
             k_list = list(a.values())
             result_line = ', '.join(k_list)
     except:
-        print("Gene '{0}' is not in KEGG database".format(gene))
+        print("    Gene '{0}' is not in KEGG database".format(gene))
     return result_line
-
-
-def scale_map(map_name):
-    sc.Figure("26cm", "16cm",
-              sc.Panel(sc.SVG(map_name + ".svg").scale(0.265)),
-              ).save(map_name + '_scaled.svg')
 
 
 def run_cobra(reaction_index, model_file, index):
@@ -477,7 +451,7 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
     p.close()
     p.join()
     result_file = os.path.join(reaction_dir, '{0}_results.txt'.format(reaction_name))
-    valid_gene_list = []
+    valid_gene_dict = OrderedDict()
     uniprot_list = []
     print('>>> Loading KEGG pathway')
     result_dict = OrderedDict()
@@ -513,20 +487,25 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
                     if table in essential_dict:
                         essentiality = essential_dict[table]
                         if essentiality == 'NE':
-                            valid_gene_list.append(table)
+                            valid_gene_dict[table] = 1
                             if uniprot_id:
                                 uniprot_list.append(uniprot_id)
+                            kegg_pathway_line = load_kegg(table, organism)
+                            c_list = [str(table), str(name), str(k_flux), str(n_flux),
+                                      str(r_flux), str(diff), str(essentiality), str(annotation),
+                                      str(kegg_pathway_line), str(meta_line), str(ppi_line)]
+                            result_dict[table] = c_list
                     else:
-                        valid_gene_list.append(table)
+                        valid_gene_dict[table] = 1
                         if uniprot_id:
                             uniprot_list.append(uniprot_id)
-                    kegg_pathway_line = load_kegg(table, organism)
-                    c_list = [str(table), str(name), str(k_flux), str(n_flux),
-                              str(r_flux), str(diff), str(essentiality), str(annotation),
-                              str(kegg_pathway_line), str(meta_line), str(ppi_line)]
-                    result_dict[table] = c_list
+                        kegg_pathway_line = load_kegg(table, organism)
+                        c_list = [str(table), str(name), str(k_flux), str(n_flux),
+                                  str(r_flux), str(diff), str(essentiality), str(annotation),
+                                  str(kegg_pathway_line), str(meta_line), str(ppi_line)]
+                        result_dict[table] = c_list
                 else:
-                    valid_gene_list.append(table)
+                    valid_gene_dict[table] = 1
                     if uniprot_id:
                         uniprot_list.append(uniprot_id)
                     kegg_pathway_line = load_kegg(table, organism)
@@ -538,7 +517,7 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
     os.makedirs(ppi_out_dir)
     print('>>> Loading PPI graph')
     g = Pool(cpu)
-    for gene in valid_gene_list:
+    for gene in valid_gene_dict.keys():
         g.apply_async(get_ppi_image, args=(taxon_id, gene, ppi_out_dir))
     g.close()
     g.join()
@@ -550,7 +529,7 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
     q = Pool(cpu)
     s_list = []
     s_dict = defaultdict()
-    for gene in valid_gene_list:
+    for gene in valid_gene_dict.keys():
         s = q.apply_async(sgd_connection, args=(gene, p_dir, l_dir))
         s_list.append(s)
     q.close()
@@ -560,11 +539,14 @@ def flux_stat(model_file, reaction_name, knockout_dict, organism, gene_dict,
         s_dict[t_list[0]] = t_list[1]
     with open(result_file, 'w', encoding='utf-8') as f:
         f.write(header)
-        for table in valid_gene_list:
-            x_list = result_dict[table]
-            x_list.append(str(s_dict[table]))
-            result_line = '\t'.join(x_list)
-            f.write(result_line + '\n')
+        for table in valid_gene_dict.keys():
+            if table in result_dict:
+                x_list = result_dict[table]
+                if x_list:
+                    x_list.append(s_dict[table])
+                    result_line = '\t'.join(x_list).strip()
+                    if result_line:
+                        f.write(result_line + '\n')
     print('>>> Loading iPath pathway graph')
     get_ipath_map('\n'.join(uniprot_list), keep_colors=True,
                   reaction_dir=reaction_dir, map_name=reaction_name)
